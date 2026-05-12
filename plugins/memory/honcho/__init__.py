@@ -229,8 +229,15 @@ class HonchoMemoryProvider(MemoryProvider):
         self._lazy_init_kwargs: Optional[dict] = None
         self._lazy_init_session_id: Optional[str] = None
 
-        # Port #4053: cron guard — when True, plugin is fully inactive
+        # Port #4053: flush guard — when True, plugin is fully inactive
         self._cron_skipped = False
+        # Port #4053: cron-write guard — reads/tools allowed in cron contexts
+        # (so scheduled jobs like daily-learning-review can use honcho_*),
+        # but writes (sync_turn / on_memory_write / on_session_end) stay off
+        # to avoid persisting cron-generated content as user conversation.
+        # Set in initialize() based on agent_context/platform; defaults True
+        # so non-cron sessions (CLI, gateways) keep writing as before.
+        self._writes_enabled = True
 
     @property
     def name(self) -> str:
@@ -275,9 +282,9 @@ class HonchoMemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         """Initialize Honcho session manager.
 
-        Handles: cron guard, recall_mode, session name resolution,
-        peer memory mode, SOUL.md ai_peer sync, memory file migration,
-        and pre-warming context at init.
+        Handles: flush guard, cron-write guard, recall_mode, session name
+        resolution, peer memory mode, SOUL.md ai_peer sync, memory file
+        migration, and pre-warming context at init.
         """
         try:
             # ----- Port #4053: flush guard -----
@@ -291,6 +298,20 @@ class HonchoMemoryProvider(MemoryProvider):
                              agent_context, platform)
                 self._cron_skipped = True
                 return
+
+            # ----- Port #4053: cron-write guard -----
+            # Cron / subagent contexts can READ Honcho (tools, prefetch) but
+            # don't write — synthetic exchanges in scheduled jobs would
+            # otherwise pollute the peer's representation as if they were
+            # real user conversation. Mirrors the supermemory plugin's
+            # `_write_enabled` pattern.
+            if agent_context in ("cron", "subagent") or platform == "cron":
+                self._writes_enabled = False
+                logger.debug(
+                    "Honcho writes disabled: cron/subagent context "
+                    "(agent_context=%s, platform=%s)",
+                    agent_context, platform,
+                )
 
             from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client
             from plugins.memory.honcho.session import HonchoSessionManager
@@ -1129,7 +1150,7 @@ class HonchoMemoryProvider(MemoryProvider):
         Messages exceeding the Honcho API limit (default 25k chars) are
         split into multiple messages with continuation markers.
         """
-        if self._cron_skipped:
+        if self._cron_skipped or not self._writes_enabled:
             return
         if not self._manager or not self._session_key:
             return
@@ -1178,7 +1199,7 @@ class HonchoMemoryProvider(MemoryProvider):
         """
         if action != "add" or target != "user" or not content:
             return
-        if self._cron_skipped:
+        if self._cron_skipped or not self._writes_enabled:
             return
         if not self._manager or not self._session_key:
             return
@@ -1198,7 +1219,7 @@ class HonchoMemoryProvider(MemoryProvider):
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Flush all pending messages to Honcho on session end."""
-        if self._cron_skipped:
+        if self._cron_skipped or not self._writes_enabled:
             return
         if not self._manager:
             return
