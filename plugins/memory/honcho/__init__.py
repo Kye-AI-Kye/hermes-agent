@@ -280,11 +280,14 @@ class HonchoMemoryProvider(MemoryProvider):
         and pre-warming context at init.
         """
         try:
-            # ----- Port #4053: cron guard -----
+            # ----- Port #4053: flush guard -----
+            # Keep Honcho active in cron contexts so memory-provider tools
+            # (honcho_profile/search/context/reasoning/conclude) are exposed
+            # to scheduled jobs like daily-learning-review.
             agent_context = kwargs.get("agent_context", "")
             platform = kwargs.get("platform", "cli")
-            if agent_context in ("cron", "flush") or platform == "cron":
-                logger.debug("Honcho skipped: cron/flush context (agent_context=%s, platform=%s)",
+            if agent_context == "flush":
+                logger.debug("Honcho skipped: flush context (agent_context=%s, platform=%s)",
                              agent_context, platform)
                 self._cron_skipped = True
                 return
@@ -1208,7 +1211,7 @@ class HonchoMemoryProvider(MemoryProvider):
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         """Handle a Honcho tool call, with lazy session init for tools-only mode."""
         if self._cron_skipped:
-            return tool_error("Honcho is not active (cron context).")
+            return tool_error("Honcho is not active in this context.")
 
         # Port #1957: ensure session is initialized for tools-only mode
         if not self._session_initialized:
