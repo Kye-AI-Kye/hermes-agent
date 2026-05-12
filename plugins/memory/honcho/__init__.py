@@ -582,12 +582,15 @@ class HonchoMemoryProvider(MemoryProvider):
         with self._base_context_lock:
             if self._base_context_cache is None:
                 # First call — synchronous fetch
-                try:
-                    ctx = self._manager.get_prefetch_context(self._session_key)
-                    self._base_context_cache = self._format_first_turn_context(ctx) if ctx else ""
-                    self._last_context_turn = self._turn_count
-                except Exception as e:
-                    logger.debug("Honcho base context fetch failed: %s", e)
+                if self._manager:
+                    try:
+                        ctx = self._manager.get_prefetch_context(self._session_key)
+                        self._base_context_cache = self._format_first_turn_context(ctx) if ctx else ""
+                        self._last_context_turn = self._turn_count
+                    except Exception as e:
+                        logger.debug("Honcho base context fetch failed: %s", e)
+                        self._base_context_cache = ""
+                else:
                     self._base_context_cache = ""
             base_context = self._base_context_cache
 
@@ -1131,18 +1134,24 @@ class HonchoMemoryProvider(MemoryProvider):
         if not self._manager or not self._session_key:
             return
 
+        # Bind to locals so the closure captures non-None refs that ty can
+        # narrow — `self._manager` could in principle be reassigned before
+        # the thread runs.
+        manager = self._manager
+        session_key = self._session_key
+
         msg_limit = self._config.message_max_chars if self._config else 25000
         clean_user_content = sanitize_context(user_content or "").strip()
         clean_assistant_content = sanitize_context(assistant_content or "").strip()
 
         def _sync():
             try:
-                session = self._manager.get_or_create(self._session_key)
+                session = manager.get_or_create(session_key)
                 for chunk in self._chunk_message(clean_user_content, msg_limit):
                     session.add_message("user", chunk)
                 for chunk in self._chunk_message(clean_assistant_content, msg_limit):
                     session.add_message("assistant", chunk)
-                self._manager._flush_session(session)
+                manager._flush_session(session)
             except Exception as e:
                 logger.debug("Honcho sync_turn failed: %s", e)
 
@@ -1174,9 +1183,13 @@ class HonchoMemoryProvider(MemoryProvider):
         if not self._manager or not self._session_key:
             return
 
+        # Bind to locals so the closure captures non-None refs (see _sync above).
+        manager = self._manager
+        session_key = self._session_key
+
         def _write():
             try:
-                self._manager.create_conclusion(self._session_key, content)
+                manager.create_conclusion(session_key, content)
             except Exception as e:
                 logger.debug("Honcho memory mirror failed: %s", e)
 
