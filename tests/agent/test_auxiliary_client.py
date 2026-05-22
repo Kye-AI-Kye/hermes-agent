@@ -1968,6 +1968,41 @@ class TestKimiTemperatureOmitted:
         assert "temperature" not in kwargs
 
 
+class TestNvidiaNemotronTemperatureOmitted:
+    @pytest.mark.parametrize(
+        "model,base_url",
+        [
+            ("nvidia/nemotron-3-super-120b-a12b", None),
+            ("nvidia/llama-3.1-nemotron-70b-instruct", None),
+            ("nemotron-3-nano:30b", "https://integrate.api.nvidia.com/v1"),
+        ],
+    )
+    def test_nemotron_models_omit_temperature(self, model, base_url):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="nvidia-nim",
+            model=model,
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0.3,
+            base_url=base_url,
+        )
+
+        assert "temperature" not in kwargs
+
+    def test_nemotron_detection_does_not_match_other_models(self):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="openrouter",
+            model="anthropic/claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0.3,
+        )
+
+        assert kwargs["temperature"] == 0.3
+
+
 # ---------------------------------------------------------------------------
 # async_call_llm payment / connection fallback (#7512 bug 2)
 # ---------------------------------------------------------------------------
