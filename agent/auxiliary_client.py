@@ -240,6 +240,8 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
 # server-side default applies.  Kimi/Moonshot models manage temperature
 # internally — sending *any* value (even the "correct" one) can conflict
 # with gateway-side mode selection (thinking → 1.0, non-thinking → 0.6).
+# NVIDIA NIM Nemotron models also reject the temperature parameter outright
+# (HTTP 400: "Unsupported parameter: temperature").
 OMIT_TEMPERATURE: object = object()
 
 
@@ -247,6 +249,14 @@ def _is_kimi_model(model: Optional[str]) -> bool:
     """True for any Kimi / Moonshot model that manages temperature server-side."""
     bare = (model or "").strip().lower().rsplit("/", 1)[-1]
     return bare.startswith("kimi-") or bare == "kimi"
+
+
+def _is_nvidia_nemotron(model: Optional[str], base_url: Optional[str] = None) -> bool:
+    """True for NVIDIA NIM Nemotron models that reject temperature."""
+    if base_url and "nvidia" in str(base_url).lower():
+        return True
+    bare = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return "nemotron" in bare
 
 
 def _is_arcee_trinity_thinking(model: Optional[str]) -> bool:
@@ -292,14 +302,18 @@ def _fixed_temperature_for_model(
 
     Returns:
         ``OMIT_TEMPERATURE`` — caller must remove the ``temperature`` key so the
-            provider chooses its own default.  Used for all Kimi / Moonshot
-            models whose gateway selects temperature server-side.
+            provider chooses its own default.  Used for Kimi / Moonshot models
+            (gateway-managed temperature) and NVIDIA Nemotron models (reject
+            temperature outright).
         ``float`` — a specific value the caller must use (reserved for future
             models with fixed-temperature contracts).
         ``None`` — no override; caller should use its own default.
     """
     if _is_kimi_model(model):
         logger.debug("Omitting temperature for Kimi model %r (server-managed)", model)
+        return OMIT_TEMPERATURE
+    if _is_nvidia_nemotron(model, base_url):
+        logger.debug("Omitting temperature for NVIDIA Nemotron model %r (rejected by API)", model)
         return OMIT_TEMPERATURE
     if _is_arcee_trinity_thinking(model):
         return 0.5
