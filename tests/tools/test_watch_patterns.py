@@ -339,6 +339,10 @@ class TestCodeExecutionBlocked:
         from tools.code_execution_tool import _TERMINAL_BLOCKED_PARAMS
         assert "watch_patterns" in _TERMINAL_BLOCKED_PARAMS
 
+    def test_force_param_blocked(self):
+        from tools.code_execution_tool import _TERMINAL_BLOCKED_PARAMS
+        assert "force" in _TERMINAL_BLOCKED_PARAMS
+
 
 # =========================================================================
 # Suppress-after-exit (anti-spam fix)
