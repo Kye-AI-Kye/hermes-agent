@@ -111,3 +111,23 @@ class TestPostDeliveryCallbackChaining:
     def test_non_callable_is_noop(self, adapter):
         adapter.register_post_delivery_callback("s", "not-callable")  # type: ignore[arg-type]
         assert adapter._post_delivery_callbacks == {}
+
+    @pytest.mark.asyncio
+    async def test_chained_async_callbacks_are_awaited_in_order(self, adapter):
+        """Regression: chaining async callbacks must not leak un-awaited coroutines."""
+        fired = []
+
+        async def first():
+            fired.append("A")
+
+        async def second():
+            fired.append("B")
+
+        adapter.register_post_delivery_callback("s", first)
+        adapter.register_post_delivery_callback("s", second)
+        cb = adapter.pop_post_delivery_callback("s")
+        result = cb()
+        assert hasattr(result, "__await__")
+        await result
+
+        assert fired == ["A", "B"]
