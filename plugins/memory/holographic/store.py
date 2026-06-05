@@ -103,6 +103,7 @@ class MemoryStore:
         db_path: "str | Path | None" = None,
         default_trust: float = 0.5,
         hrr_dim: int = 1024,
+        embedder=None,
     ) -> None:
         if db_path is None:
             from hermes_constants import get_hermes_home
@@ -112,6 +113,7 @@ class MemoryStore:
         self.default_trust = _clamp_trust(default_trust)
         self.hrr_dim = hrr_dim
         self._hrr_available = hrr._HAS_NUMPY
+        self.embedder = embedder  # optional neural-embedding layer (semantic recall)
         self._conn: sqlite3.Connection = sqlite3.connect(
             str(self.db_path),
             check_same_thread=False,
@@ -137,6 +139,8 @@ class MemoryStore:
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}
         if "hrr_vector" not in columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
+        if "embedding" not in columns:
+            self._conn.execute("ALTER TABLE facts ADD COLUMN embedding BLOB")
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -184,6 +188,8 @@ class MemoryStore:
 
             # Compute HRR vector after entity linking
             self._compute_hrr_vector(fact_id, content)
+            # Compute neural embedding (optional, semantic recall)
+            self._compute_embedding(fact_id, content)
             self._rebuild_bank(category)
 
             return fact_id
@@ -292,6 +298,9 @@ class MemoryStore:
                     self._link_fact_entity(fact_id, entity_id)
                 self._conn.commit()
 
+            # Recompute neural embedding if content changed
+            if content is not None:
+                self._compute_embedding(fact_id, content)
             # Recompute HRR vector if content changed
             if content is not None:
                 self._compute_hrr_vector(fact_id, content)
@@ -492,6 +501,28 @@ class MemoryStore:
             self._conn.execute(
                 "UPDATE facts SET hrr_vector = ? WHERE fact_id = ?",
                 (hrr.phases_to_bytes(vector), fact_id),
+            )
+            self._conn.commit()
+
+    def _compute_embedding(self, fact_id: int, content: str) -> None:
+        """Compute and store the neural embedding for a fact (semantic recall).
+
+        No-op if no embedder configured or the backend is unavailable — keeps
+        keyword/HRR recall working regardless of the embedding API's state.
+        """
+        emb = self.embedder
+        if emb is None or not emb.available():
+            return
+        try:
+            vec = emb.embed_one(content, input_type="passage")
+        except Exception:
+            vec = None
+        if vec is None:
+            return
+        with self._lock:
+            self._conn.execute(
+                "UPDATE facts SET embedding = ? WHERE fact_id = ?",
+                (emb.to_bytes(vec), fact_id),
             )
             self._conn.commit()
 
