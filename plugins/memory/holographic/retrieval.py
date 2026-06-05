@@ -30,10 +30,17 @@ class FactRetriever:
         jaccard_weight: float = 0.3,
         hrr_weight: float = 0.3,
         hrr_dim: int = 1024,
+        embedder=None,
+        embed_weight: float = 0.0,
     ):
         self.store = store
         self.half_life = temporal_decay_half_life
         self.hrr_dim = hrr_dim
+        self.embedder = embedder
+
+        # Neural layer disabled if no usable embedder — keeps recall working.
+        if embed_weight > 0 and (embedder is None or not embedder.available()):
+            embed_weight = 0.0
 
         # Auto-redistribute weights if numpy unavailable
         if hrr_weight > 0 and not hrr._HAS_NUMPY:
@@ -41,9 +48,22 @@ class FactRetriever:
             jaccard_weight = 0.4
             hrr_weight = 0.0
 
+        # When neural is active, let semantic similarity LEAD: it gets
+        # embed_weight, and the keyword/HRR terms share the remainder
+        # (kept as tiebreakers). Otherwise a shared token like "work" can let a
+        # keyword match outscore the true semantic match.
+        if embed_weight > 0:
+            keep = max(0.0, 1.0 - embed_weight)
+            total = fts_weight + jaccard_weight + hrr_weight
+            if total > 0:
+                fts_weight = fts_weight / total * keep
+                jaccard_weight = jaccard_weight / total * keep
+                hrr_weight = hrr_weight / total * keep
+
         self.fts_weight = fts_weight
         self.jaccard_weight = jaccard_weight
         self.hrr_weight = hrr_weight
+        self.embed_weight = embed_weight
 
     def search(
         self,
@@ -62,13 +82,26 @@ class FactRetriever:
 
         Returns list of dicts with fact data + 'score' field, sorted by score desc.
         """
-        # Stage 1: Get FTS5 candidates (more than limit for reranking headroom)
+        # Stage 1: FTS5 keyword candidates (more than limit for rerank headroom)
         candidates = self._fts_candidates(query, category, min_trust, limit * 3)
+
+        # Stage 1b: neural vector candidates — surfaces semantic matches that share
+        # NO keywords with the query (e.g. "car" finding "automobile"), which the
+        # FTS5 stage can never return. Merged in by fact_id.
+        query_evec = None
+        if self.embed_weight > 0 and self.embedder is not None:
+            query_evec = self.embedder.embed_one(query, input_type="query")
+            if query_evec is not None:
+                seen = {f["fact_id"] for f in candidates}
+                for f in self._vector_candidates(query_evec, category, min_trust, limit * 3):
+                    if f["fact_id"] not in seen:
+                        candidates.append(f)
+                        seen.add(f["fact_id"])
 
         if not candidates:
             return []
 
-        # Stage 2: Rerank with Jaccard + trust + optional decay
+        # Stage 2: Rerank with Jaccard + HRR + neural + trust + optional decay
         query_tokens = self._tokenize(query)
         scored = []
 
@@ -88,10 +121,20 @@ class FactRetriever:
             else:
                 hrr_sim = 0.5  # neutral
 
-            # Combine FTS5 + Jaccard + HRR
+            # Neural embedding similarity (semantic recall). Use clamped RAW cosine
+            # (not shifted to [0,1]) so close matches keep their discrimination —
+            # shifting compresses 0.45 vs 0.44 into a near-tie and neutralizes neural.
+            if self.embed_weight > 0 and query_evec is not None and fact.get("embedding"):
+                embed_sim = max(0.0, self.embedder.cosine(
+                    query_evec, self.embedder.from_bytes(fact["embedding"])))
+            else:
+                embed_sim = 0.0  # no embedding → no semantic evidence
+
+            # Combine FTS5 + Jaccard + HRR + neural
             relevance = (self.fts_weight * fts_score
                         + self.jaccard_weight * jaccard
-                        + self.hrr_weight * hrr_sim)
+                        + self.hrr_weight * hrr_sim
+                        + self.embed_weight * embed_sim)
 
             # Trust weighting
             score = relevance * fact["trust_score"]
@@ -106,10 +149,51 @@ class FactRetriever:
         # Sort by score descending, return top limit
         scored.sort(key=lambda x: x["score"], reverse=True)
         results = scored[:limit]
-        # Strip raw HRR bytes — callers expect JSON-serializable dicts
+        # Strip raw vector bytes — callers expect JSON-serializable dicts
         for fact in results:
             fact.pop("hrr_vector", None)
+            fact.pop("embedding", None)
+            fact.pop("_vec_sim", None)
         return results
+
+    def _vector_candidates(
+        self,
+        query_evec,
+        category: str | None,
+        min_trust: float,
+        limit: int,
+    ) -> list[dict]:
+        """Top-``limit`` facts by neural cosine similarity over all embedded facts.
+
+        Brute-force cosine (fine for a personal memory of up to tens of thousands
+        of facts). Returns dicts shaped like FTS candidates (fts_rank=0.0) so the
+        shared rerank loop treats them uniformly.
+        """
+        where = ["embedding IS NOT NULL", "trust_score >= ?"]
+        params: list = [min_trust]
+        if category:
+            where.append("category = ?")
+            params.append(category)
+        sql = f"SELECT * FROM facts WHERE {' AND '.join(where)}"
+        try:
+            rows = self.store._conn.execute(sql, params).fetchall()
+        except Exception:
+            return []
+        scored: list[tuple[float, dict]] = []
+        for row in rows:
+            d = dict(row)
+            blob = d.get("embedding")
+            if not blob:
+                continue
+            try:
+                sim = self.embedder.cosine(query_evec, self.embedder.from_bytes(blob))
+            except Exception:
+                continue
+            d["fts_rank"] = 0.0
+            d["_vec_sim"] = sim
+            scored.append((sim, d))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [d for _, d in scored[:limit]]
 
     def probe(
         self,

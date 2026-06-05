@@ -171,12 +171,38 @@ class HolographicMemoryProvider(MemoryProvider):
         hrr_weight = float(self._config.get("hrr_weight", 0.3))
         temporal_decay = int(self._config.get("temporal_decay_half_life", 0))
 
-        self._store = MemoryStore(db_path=db_path, default_trust=default_trust, hrr_dim=hrr_dim)
+        # Optional neural-embedding layer (semantic recall). Disabled by default;
+        # gracefully no-ops if the embedding backend is unavailable.
+        embedder = None
+        embed_weight = 0.0
+        if bool(self._config.get("neural_enabled", False)):
+            try:
+                try:
+                    from .neural import NeuralEmbedder
+                except ImportError:  # plugin-dir-on-sys.path load
+                    from neural import NeuralEmbedder  # type: ignore[no-redef]
+                embedder = NeuralEmbedder({
+                    "base_url": self._config.get(
+                        "neural_base_url", "https://integrate.api.nvidia.com/v1"),
+                    "model": self._config.get("neural_model", "nvidia/nv-embedqa-e5-v5"),
+                    "key_env": self._config.get("neural_key_env", "NVIDIA_NIM_API_KEY"),
+                    "dim": int(self._config.get("neural_dim", 1024)),
+                })
+                embed_weight = float(self._config.get("embed_weight", 0.5))
+            except Exception:
+                embedder = None
+                embed_weight = 0.0
+
+        self._store = MemoryStore(
+            db_path=db_path, default_trust=default_trust, hrr_dim=hrr_dim, embedder=embedder
+        )
         self._retriever = FactRetriever(
             store=self._store,
             temporal_decay_half_life=temporal_decay,
             hrr_weight=hrr_weight,
             hrr_dim=hrr_dim,
+            embedder=embedder,
+            embed_weight=embed_weight,
         )
         self._session_id = session_id
 
