@@ -101,6 +101,56 @@ def test_backward_compat_no_embedder(tmp_path):
     assert row["embedding"] is None
 
 
+def test_reindex_backfills_null_embeddings(tmp_path):
+    # Facts added without an embedder have NULL embeddings; attaching an embedder
+    # and calling reindex_embeddings() should fill exactly those.
+    store = MemoryStore(db_path=str(tmp_path / "m.db"))  # embedder=None
+    store.add_fact("alpha beta")
+    store.add_fact("gamma delta")
+    nulls = store._conn.execute(
+        "SELECT count(*) FROM facts WHERE embedding IS NULL"
+    ).fetchone()[0]
+    assert nulls == 2
+
+    store.embedder = FakeEmbedder({"alpha beta": [1.0, 0.0], "gamma delta": [0.0, 1.0]})
+    n = store.reindex_embeddings()
+    assert n == 2
+    remaining = store._conn.execute(
+        "SELECT count(*) FROM facts WHERE embedding IS NULL"
+    ).fetchone()[0]
+    assert remaining == 0
+    # second call is a no-op — nothing left to backfill
+    assert store.reindex_embeddings() == 0
+
+
+def test_reindex_force_reembeds_all(tmp_path):
+    emb = FakeEmbedder({"alpha beta": [1.0, 0.0]})
+    store = MemoryStore(db_path=str(tmp_path / "m.db"), embedder=emb)
+    fid = store.add_fact("alpha beta")
+    before = store._conn.execute(
+        "SELECT embedding FROM facts WHERE fact_id=?", (fid,)
+    ).fetchone()["embedding"]
+
+    # Simulate a model change: same text now maps to a different vector.
+    store.embedder = FakeEmbedder({"alpha beta": [0.0, 1.0]})
+    # Without force, nothing is NULL so nothing changes.
+    assert store.reindex_embeddings() == 0
+    # With force, the stale vector is replaced.
+    assert store.reindex_embeddings(force=True) == 1
+    after = store._conn.execute(
+        "SELECT embedding FROM facts WHERE fact_id=?", (fid,)
+    ).fetchone()["embedding"]
+    assert after != before
+    assert np.allclose(emb.from_bytes(after), [0.0, 1.0])
+
+
+def test_reindex_noop_without_embedder(tmp_path):
+    store = MemoryStore(db_path=str(tmp_path / "m.db"))  # embedder=None
+    store.add_fact("alpha beta")
+    assert store.reindex_embeddings() == 0
+    assert store.reindex_embeddings(force=True) == 0
+
+
 def test_unavailable_embedder_disables_neural(tmp_path):
     class Down(FakeEmbedder):
         def available(self):
