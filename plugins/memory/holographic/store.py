@@ -590,6 +590,53 @@ class MemoryStore:
 
             return len(rows)
 
+    def reindex_embeddings(self, *, force: bool = False) -> int:
+        """(Re)compute neural embeddings for stored facts. Backfill / migration.
+
+        By default only fills facts whose ``embedding`` is NULL (cheap backfill
+        after a bulk import or after enabling the neural layer on an existing
+        store). With ``force=True`` re-embeds every fact — use after changing the
+        embedding model or dimension, where existing vectors are stale.
+
+        No-op returning 0 if no embedder is configured or the backend is
+        unavailable; keyword/HRR recall is unaffected either way. Embeds in a
+        single batched call and commits once.
+
+        Returns the number of facts successfully (re)embedded.
+        """
+        emb = self.embedder
+        if emb is None or not emb.available():
+            return 0
+
+        where = "" if force else " WHERE embedding IS NULL"
+        rows = self._conn.execute(
+            f"SELECT fact_id, content FROM facts{where}"  # noqa: S608 (no user input)
+        ).fetchall()
+        if not rows:
+            return 0
+
+        try:
+            vecs = emb.embed([row["content"] for row in rows], input_type="passage")
+        except Exception:
+            vecs = None
+        # embed() returns None on total failure and is 1:1 on success (partial
+        # failure raises), so a length mismatch means "don't trust it".
+        if not vecs or len(vecs) != len(rows):
+            return 0
+
+        updated = 0
+        with self._lock:
+            for row, vec in zip(rows, vecs):
+                if vec is None:
+                    continue
+                self._conn.execute(
+                    "UPDATE facts SET embedding = ? WHERE fact_id = ?",
+                    (emb.to_bytes(vec), row["fact_id"]),
+                )
+                updated += 1
+            self._conn.commit()
+        return updated
+
     # ------------------------------------------------------------------
     # Utilities
     # ------------------------------------------------------------------
