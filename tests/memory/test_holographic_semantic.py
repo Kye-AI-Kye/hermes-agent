@@ -4,6 +4,11 @@ Hermetic — uses a controllable fake embedder (no network). Proves the WIRING:
 a fact sharing NO keywords with the query still surfaces via vector candidates,
 and that embedder=None preserves the original (keyword/HRR) behaviour.
 """
+# store/retrieval are loaded onto sys.path at plugin-load time (below), not as a
+# package, so static analysis can't resolve them. The fake embedders mirror the
+# real interface (e.g. available() -> bool, input_type kwarg) so overrides that
+# return a narrower literal are fine here.
+# pyright: reportMissingImports=false, reportIncompatibleMethodOverride=false
 import os
 import sys
 
@@ -28,7 +33,7 @@ class FakeEmbedder:
     def __init__(self, vectors: dict):
         self._v = {k: np.asarray(v, dtype=np.float32) for k, v in vectors.items()}
 
-    def available(self):
+    def available(self) -> bool:
         return True
 
     def embed_one(self, text, input_type="passage"):
@@ -153,7 +158,7 @@ def test_reindex_noop_without_embedder(tmp_path):
 
 def test_unavailable_embedder_disables_neural(tmp_path):
     class Down(FakeEmbedder):
-        def available(self):
+        def available(self) -> bool:
             return False
     store = MemoryStore(db_path=str(tmp_path / "m.db"), embedder=Down({}))
     store.add_fact("alpha beta")
