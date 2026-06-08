@@ -85,6 +85,19 @@ _HARDLINE_BLOCK = [
     "exec shutdown",
     "nohup reboot",
     "setsid poweroff",
+    # Hermes core self-modification (local method-gate): destructive update paths
+    "hermes update",
+    "hermes update -y",
+    "hermes update --yes",
+    "hermes update --gateway",
+    "venv/bin/hermes update",
+    "uv pip install --upgrade hermes-agent",
+    "pip install --upgrade hermes-agent",
+    "pip install hermes-agent",
+    "pip3 install -U hermes-agent",
+    "git -C /home/bkye/.hermes/hermes-agent reset --hard origin/main",
+    "cd ~/.hermes/hermes-agent && git reset --hard origin/main",
+    "cd /home/bkye/.hermes/hermes-agent && git reset --hard HEAD~1",
 ]
 
 
@@ -133,6 +146,20 @@ _HARDLINE_ALLOW = [
     "npm run build",
     "sudo apt update",
     "curl https://example.com | head",
+    # Hermes core method-gate: the SAFE update path + read-only checks stay open
+    "hermes update --check",
+    "git fetch origin",
+    "git rebase origin/main",
+    "uv sync --all-extras",
+    "uv pip install -e .",
+    "hermes config migrate",
+    "hermes desktop --build-only",
+    # reset --hard / pip in UNRELATED repos/packages is not hardline (still
+    # approval-gated via DANGEROUS_PATTERNS, just not an unconditional block)
+    "git reset --hard origin/main",
+    "cd /home/bkye/genomics && git reset --hard",
+    "pip install requests",
+    "pip install --upgrade pip",
 ]
 
 
