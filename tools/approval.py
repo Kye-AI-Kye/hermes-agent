@@ -274,6 +274,32 @@ HARDLINE_PATTERNS = [
     (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
     (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
     (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
+    # --- Local guard: Hermes core self-modification (method-gate) -------------
+    # Kye's rule is now a *method* gate, not a permission gate: Hermes may keep
+    # its own core current AUTONOMOUSLY, but ONLY via the safe controlled-rebase
+    # path (tag+push to fork → git fetch → git rebase origin/main → re-run
+    # patch tests → restart). The destructive update paths are hard-blocked here
+    # so the safe path is the ONLY path the agent can take — they wipe/orphan
+    # the local patches (incl. this security guard + the holographic semantic
+    # memory layer). `git fetch`, `git rebase`, `uv sync`, `uv pip install -e .`
+    # and `hermes update --check` are intentionally NOT matched, so the safe
+    # path and read-only checks stay open.
+    (r'\bhermes\s+update\b(?!.*--check)',
+     "hermes update (destructive core update — does git reset --hard internally; "
+     "use the safe rebase path: git fetch && git rebase origin/main)"),
+    (r'\b(?:uv\s+)?pip[0-9]?\s+install\b[^;&|\n]*\bhermes-agent\b',
+     "pip install hermes-agent (shadows the editable core checkout — use uv sync "
+     "/ uv pip install -e . instead)"),
+    # git reset --hard scoped to the hermes core tree (path-referenced forms:
+    # `git -C .../hermes-agent ... reset --hard`, `reset --hard <core ref>`, and
+    # `cd .../hermes-agent && ... git reset --hard`). A bare reset --hard in an
+    # unrelated repo stays merely approval-gated (DANGEROUS_PATTERNS).
+    (r'\bgit\s+-c\s+\S*hermes-agent\S*[^\n]*reset[^\n]*--hard',
+     "git reset --hard on the Hermes core (destroys local patches — rebase instead)"),
+    (r'\breset\s+--hard[^\n]*hermes-agent',
+     "git reset --hard on the Hermes core (destroys local patches — rebase instead)"),
+    (r'\bcd\s+\S*hermes-agent\S*[^\n]*reset\s+--hard',
+     "git reset --hard on the Hermes core (destroys local patches — rebase instead)"),
 ]
 
 # Pre-compiled variant used by the hot-path matcher. Building these at module
