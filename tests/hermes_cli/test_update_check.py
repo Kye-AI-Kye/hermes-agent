@@ -133,7 +133,10 @@ def test_check_for_updates_invalidates_on_repo_head_change(tmp_path, monkeypatch
         result = banner.check_for_updates()
 
     assert result == 0
-    assert mock_run.call_count == 2  # git fetch + git rev-list
+    commands = [call.args[0] for call in mock_run.call_args_list]
+    assert ["git", "remote", "get-url", "origin"] in commands
+    assert ["git", "fetch", "origin", "--quiet"] in commands
+    assert ["git", "rev-list", "--count", "HEAD..origin/main"] in commands
     written = json.loads(cache_file.read_text())
     assert written["behind"] == 0
     assert written["repo_head"].endswith(":new-head")
