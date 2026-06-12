@@ -201,6 +201,27 @@ def test_subprocess_killall_hermes_blocked():
         subprocess.run(["killall", "hermes"])
 
 
+# ──────────────────── live checkout Git mutations ─────────────
+
+
+def test_git_checkout_in_live_repo_blocked():
+    live_repo = os.path.expanduser("~/.hermes/hermes-agent")
+    with pytest.raises(RuntimeError, match="live Hermes checkout"):
+        subprocess.run(["git", "checkout", "main"], cwd=live_repo)
+
+
+def test_git_pull_in_live_repo_blocked():
+    live_repo = os.path.expanduser("~/.hermes/hermes-agent")
+    with pytest.raises(RuntimeError, match="live Hermes checkout"):
+        subprocess.run(["git", "pull", "--ff-only", "origin", "main"], cwd=live_repo)
+
+
+def test_git_dash_c_reset_in_live_repo_blocked():
+    live_repo = os.path.expanduser("~/.hermes/hermes-agent")
+    with pytest.raises(RuntimeError, match="live Hermes checkout"):
+        subprocess.run(["git", "-C", live_repo, "reset", "--hard", "origin/main"])
+
+
 # ──────────────────── pass-through cases (must NOT raise) ──────
 
 

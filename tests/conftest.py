@@ -504,8 +504,8 @@ def _ensure_current_event_loop(request):
 # PR #23285 caught this happening 5+ times in 3 days, every time
 # correlated with a ``tests/hermes_cli/`` pytest run starting up.
 #
-# This fixture makes the leak impossible by intercepting the two
-# primitives that actually do damage:
+# This fixture makes the leak impossible by intercepting the primitives
+# that actually do damage:
 #
 #  • ``os.kill`` rejects any PID outside the test process subtree with
 #    a hard ``RuntimeError`` so the offending test gets a stack trace
@@ -514,6 +514,8 @@ def _ensure_current_event_loop(request):
 #    ``check_output`` reject any ``systemctl ... <verb> hermes-gateway``
 #    invocation that would mutate the live unit. Read-only systemctl
 #    calls (``status``, ``show``, ``list-units``) still pass through.
+#  • Git source mutations are rejected when their resolved target is the
+#    canonical live checkout at ``~/.hermes/hermes-agent``.
 #
 # We intentionally do NOT stub ``find_gateway_pids`` / ``_scan_gateway_pids``
 # here — tests of those functions themselves need the real implementation.
@@ -657,6 +659,22 @@ def _live_system_guard(request, monkeypatch):
         "daemon-reload", "try-restart", "reload-or-restart",
     )
     _PROCESS_KILLERS = ("pkill", "killall", "taskkill", "skill", "fuser")
+    _GIT_MUTATING_VERBS = {
+        "am",
+        "branch",
+        "checkout",
+        "cherry-pick",
+        "clean",
+        "commit",
+        "merge",
+        "pull",
+        "rebase",
+        "reset",
+        "restore",
+        "revert",
+        "switch",
+    }
+    _LIVE_CHECKOUT = (Path.home() / ".hermes" / "hermes-agent").resolve()
 
     def _cmd_to_string(cmd) -> str:
         if cmd is None:
@@ -714,7 +732,53 @@ def _live_system_guard(request, monkeypatch):
                     return True
         return False
 
-    def _check_subprocess_cmd(name, cmd):
+    def _resolved_path(value) -> Path | None:
+        if value is None:
+            return None
+        try:
+            return Path(value).expanduser().resolve()
+        except (OSError, TypeError, ValueError):
+            return None
+
+    def _git_target_and_verb(cmd, cwd=None) -> tuple[Path | None, str | None]:
+        cmd_str = _cmd_to_string(cmd)
+        try:
+            tokens = _shlex.split(cmd_str)
+        except ValueError:
+            tokens = cmd_str.split()
+        if not tokens:
+            return None, None
+
+        git_index = None
+        for index, token in enumerate(tokens):
+            head = token.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].lower()
+            if head in {"git", "git.exe"}:
+                git_index = index
+                break
+        if git_index is None:
+            return None, None
+
+        target = _resolved_path(cwd) or _resolved_path(Path.cwd())
+        verb = None
+        index = git_index + 1
+        while index < len(tokens):
+            token = tokens[index]
+            if token == "-C" and index + 1 < len(tokens):
+                target = _resolved_path(tokens[index + 1])
+                index += 2
+                continue
+            if token.startswith("-"):
+                index += 1
+                continue
+            verb = token.lower()
+            break
+        return target, verb
+
+    def _is_live_checkout_git_mutation(cmd, cwd=None) -> bool:
+        target, verb = _git_target_and_verb(cmd, cwd=cwd)
+        return target == _LIVE_CHECKOUT and verb in _GIT_MUTATING_VERBS
+
+    def _check_subprocess_cmd(name, cmd, *, cwd=None):
         if _is_blocked_systemctl(cmd):
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "
@@ -731,10 +795,17 @@ def _live_system_guard(request, monkeypatch):
                 "Mark with @pytest.mark.live_system_guard_bypass if "
                 "intentional."
             )
+        if _is_live_checkout_git_mutation(cmd, cwd=cwd):
+            raise RuntimeError(
+                f"tests/conftest.py live-system guard: blocked "
+                f"subprocess.{name}({cmd!r}) in {cwd!r} — would mutate "
+                f"the live Hermes checkout at {_LIVE_CHECKOUT}. Point "
+                "PROJECT_ROOT/cwd at tmp_path and mock the Git subprocess."
+            )
 
     def _wrap_subprocess(name, real):
         def _guarded(cmd, *args, **kwargs):
-            _check_subprocess_cmd(name, cmd)
+            _check_subprocess_cmd(name, cmd, cwd=kwargs.get("cwd"))
             return real(cmd, *args, **kwargs)
         _guarded.__name__ = f"_guarded_{name}"
         # Make the wrapper subscriptable like the wrapped callable when
@@ -752,7 +823,7 @@ def _live_system_guard(request, monkeypatch):
 
         class _GuardedPopen(real):  # type: ignore[misc, valid-type]
             def __init__(self, cmd, *args, **kwargs):
-                _check_subprocess_cmd("Popen", cmd)
+                _check_subprocess_cmd("Popen", cmd, cwd=kwargs.get("cwd"))
                 super().__init__(cmd, *args, **kwargs)
 
         _GuardedPopen.__name__ = "Popen"
@@ -824,12 +895,18 @@ def _live_system_guard(request, monkeypatch):
 
         async def _guarded_async_exec(program, *args, **kwargs):
             _check_subprocess_cmd(
-                "asyncio.create_subprocess_exec", [program, *args]
+                "asyncio.create_subprocess_exec",
+                [program, *args],
+                cwd=kwargs.get("cwd"),
             )
             return await real_async_exec(program, *args, **kwargs)
 
         async def _guarded_async_shell(cmd, *args, **kwargs):
-            _check_subprocess_cmd("asyncio.create_subprocess_shell", cmd)
+            _check_subprocess_cmd(
+                "asyncio.create_subprocess_shell",
+                cmd,
+                cwd=kwargs.get("cwd"),
+            )
             return await real_async_shell(cmd, *args, **kwargs)
 
         monkeypatch.setattr(_asyncio, "create_subprocess_exec", _guarded_async_exec)
