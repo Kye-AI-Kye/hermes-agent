@@ -693,6 +693,15 @@ def _live_system_guard(request, monkeypatch):
                 return ""
         return str(cmd)
 
+    def _cmd_tokens(cmd) -> list[str]:
+        if isinstance(cmd, (list, tuple)):
+            return [str(token) for token in cmd]
+        cmd_str = _cmd_to_string(cmd)
+        try:
+            return _shlex.split(cmd_str)
+        except ValueError:
+            return cmd_str.split()
+
     def _matches_hermes_gateway(cmd_str: str) -> bool:
         low = cmd_str.lower()
         return any(tok in low for tok in _HERMES_TOKENS)
@@ -711,10 +720,7 @@ def _live_system_guard(request, monkeypatch):
 
     def _is_process_killer(cmd) -> bool:
         cmd_str = _cmd_to_string(cmd)
-        try:
-            tokens = _shlex.split(cmd_str)
-        except ValueError:
-            tokens = cmd_str.split()
+        tokens = _cmd_tokens(cmd)
         if not tokens:
             return False
         for tok in tokens:
@@ -741,11 +747,7 @@ def _live_system_guard(request, monkeypatch):
             return None
 
     def _git_target_and_verb(cmd, cwd=None) -> tuple[Path | None, str | None]:
-        cmd_str = _cmd_to_string(cmd)
-        try:
-            tokens = _shlex.split(cmd_str)
-        except ValueError:
-            tokens = cmd_str.split()
+        tokens = _cmd_tokens(cmd)
         if not tokens:
             return None, None
 
