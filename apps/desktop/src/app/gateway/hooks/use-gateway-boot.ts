@@ -101,6 +101,7 @@ export function useGatewayBoot({
     let reconnecting = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let reconnectAttempt = 0
+    let reconnectFailureSurfaced = false
     // Surface "sign in again" once per disconnect episode, not on every backoff
     // tick — a stale OAuth ticket fails every attempt and would otherwise stack
     // identical error toasts (and their haptics). Reset on the next clean open.
@@ -155,6 +156,7 @@ export function useGatewayBoot({
         }
 
         reconnectAttempt = 0
+        reconnectFailureSurfaced = false
         // Resync state that may have moved on the backend while we were asleep.
         await callbacksRef.current.refreshHermesConfig().catch(() => undefined)
         await callbacksRef.current.refreshSessions().catch(() => undefined)
@@ -184,6 +186,12 @@ export function useGatewayBoot({
       // 1s, 2s, 4s … capped at 15s.
       const delay = Math.min(15_000, 1_000 * 2 ** Math.min(reconnectAttempt, 4))
       reconnectAttempt += 1
+
+      if (reconnectAttempt >= 6 && !reconnectFailureSurfaced) {
+        reconnectFailureSurfaced = true
+        failDesktopBoot('Remote gateway is still unavailable after repeated reconnect attempts.')
+      }
+
       reconnectTimer = setTimeout(() => {
         reconnectTimer = null
         void attemptReconnect()
@@ -229,6 +237,7 @@ export function useGatewayBoot({
 
       if (st === 'open') {
         reconnectAttempt = 0
+        reconnectFailureSurfaced = false
         reauthNotified = false
         clearReconnectTimer()
 

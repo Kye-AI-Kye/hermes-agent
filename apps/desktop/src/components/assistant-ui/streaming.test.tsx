@@ -1,7 +1,7 @@
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useEffect, useState } from 'react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { Thread } from './thread'
 
@@ -134,7 +134,7 @@ function assistantReasoningMessage(text: string, running = false): ThreadMessage
   return {
     id: 'assistant-reasoning-1',
     role: 'assistant',
-    content: [{ type: 'reasoning', text }],
+    content: [{ type: 'reasoning', text, ...(running ? { status: { type: 'running' as const } } : {}) }],
     status: running ? { type: 'running' } : { type: 'complete', reason: 'stop' },
     createdAt,
     metadata: {
@@ -399,6 +399,10 @@ function IntroHarness() {
 describe('assistant-ui streaming renderer', () => {
   beforeEach(() => {
     resizeObservers.clear()
+  })
+
+  afterEach(() => {
+    cleanup()
   })
 
   it('renders assistant text incrementally before completion', async () => {
@@ -669,15 +673,14 @@ describe('assistant-ui streaming renderer', () => {
 
   it('renders an incomplete streaming reasoning fenced code block as a code card', async () => {
     const { container } = render(<RunningReasoningHarness />)
-    const ui = within(container)
-
-    fireEvent.click(ui.getByRole('button', { name: /thinking/i }))
 
     await waitFor(() => {
       expect(container.querySelector('[data-slot="code-card"]')).toBeTruthy()
     })
 
-    expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toContain('const answer = 42')
+    await waitFor(() => {
+      expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toContain('const answer = 42')
+    })
     expect(container.textContent).not.toContain('```ts')
   })
 
